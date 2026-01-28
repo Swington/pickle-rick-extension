@@ -9,17 +9,14 @@
 set -euo pipefail
 
 # -- Configuration --
-# Locate extension root relative to this script
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-EXTENSION_DIR="$(dirname "$SCRIPT_DIR")"
-
-source "$SCRIPT_DIR/utils.sh"
+ROOT_DIR="$HOME/.gemini/extensions/pickle-rick"
+source "$ROOT_DIR/scripts/utils.sh"
 PROJECT_ROOT=$(resolve_project_root)
 
-SESSIONS_ROOT="$EXTENSION_DIR/sessions"
-JAR_ROOT="$EXTENSION_DIR/jar"
-WORKTREES_ROOT="$EXTENSION_DIR/worktrees"
-SESSIONS_MAP="$EXTENSION_DIR/current_sessions.json"
+SESSIONS_ROOT="$ROOT_DIR/sessions"
+JAR_ROOT="$ROOT_DIR/jar"
+WORKTREES_ROOT="$ROOT_DIR/worktrees"
+SESSIONS_MAP="$ROOT_DIR/current_sessions.json"
 
 # Ensure core directories exist
 mkdir -p "$SESSIONS_ROOT" "$JAR_ROOT" "$WORKTREES_ROOT"
