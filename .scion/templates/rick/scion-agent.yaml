@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Council Rick - Specialized Agent Template
+# Council Rick - Specialized Agent Template (Non-Interactive for Auto-Close)
 harness_configs:
   gemini:
-    command: ["gemini", "--yolo", "--prompt-interactive", "--system-prompt", "{{.AgentHome}}/system_prompt.md", "{{.Task}}"]
+    command: ["gemini", "--yolo", "--system-prompt", "{{.AgentHome}}/system_prompt.md", "{{.Task}}"]
 
 gemini: {}

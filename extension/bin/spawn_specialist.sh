@@ -20,12 +20,8 @@ if [[ -z "$TYPE" || -z "$TASK" ]]; then
     exit 1
 fi
 
-# 1. Start the agent in a detached container using Scion
-# We use the 'rick' template which has our persona already baked in.
-echo "🥒 Summoning $AGENT_NAME from the multi-verse..."
-scion start "$AGENT_NAME" "$TASK" --type rick --yes
-
-# 2. Split the current tmux window and attach to the container
-# This gives the user the visual 'teammate' experience.
-echo "🥒 Opening a portal to $AGENT_NAME's brain..."
-tmux split-window -h "scion attach $AGENT_NAME"
+# 1. Start and Attach in a new tmux pane
+# We wrap it in a bash subshell so we can sleep before the pane closes,
+# giving the user a chance to see the 'I AM DONE' promise.
+echo "🥒 Summoning $AGENT_NAME..."
+tmux split-window -h "bash -c 'scion start $AGENT_NAME \"$TASK\" --type rick --yes --attach; echo -e \"\n\n🥒 Rick has finished his mission. Closing pane in 5s...\"; sleep 5'"
