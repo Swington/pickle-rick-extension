@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Council of Ricks - Fixed Spawner (Containerized + Smart Layout + Auto-Close)
+# Council of Ricks - Manager-Controlled Specialist Spawner
 # Usage: ./spawn_specialist.sh <specialist_type> "<task_description>"
 
 TYPE=$1
@@ -66,9 +66,11 @@ else
     fi
 fi
 
-# 4. Launch via Scion and Auto-Close
-# We use --attach so the scion process stays alive until the agent finishes.
-# The '&& exit' ensures the tmux pane closes immediately after.
-SCION_CMD="scion start \"$AGENT_NAME\" \"$FINAL_TASK\" --type rick --yes --attach; echo -e '\n\n🥒 Rick has finished his mission. Closing portal in 5s...'; sleep 5; exit"
+# 4. Launch via Scion (NO AUTO-CLOSE)
+# We drop into a bash shell after scion finishes so the pane stays open for inspection.
+SCION_CMD="scion start \"$AGENT_NAME\" \"$FINAL_TASK\" --type rick --yes --attach; echo -e '\n\n🥒 Rick has finished his mission. Pane remains open for Manager review.'; bash"
 
 tmux send-keys -t "$NEW_PANE" "$SCION_CMD" C-m
+
+# 5. Return metadata to the Manager
+echo "SUCCESS: Agent $AGENT_NAME spawned in pane $NEW_PANE"
