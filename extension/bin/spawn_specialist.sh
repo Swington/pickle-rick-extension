@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Council of Ricks - Smart Layout Specialist Spawner
+# Council of Ricks - Fixed Spawner (Containerized + Smart Layout + Auto-Close)
 # Usage: ./spawn_specialist.sh <specialist_type> "<task_description>"
 
 TYPE=$1
@@ -20,7 +20,14 @@ if [[ -z "$TYPE" || -z "$TASK" ]]; then
     exit 1
 fi
 
-# Determine persona based on type
+# 1. Load Persona Content
+if [[ -f "$SYSTEM_PROMPT_FILE" ]]; then
+    PERSONA_HEADER=$(cat "$SYSTEM_PROMPT_FILE")
+else
+    PERSONA_HEADER="# **SPECIALIST RICK**"
+fi
+
+# Determine persona skill based on type
 case "$TYPE" in
     "research") PERSONA_SKILL="code-researcher" ;;
     "architect") PERSONA_SKILL="implementation-planner" ;;
@@ -29,21 +36,29 @@ case "$TYPE" in
     *) PERSONA_SKILL="" ;;
 esac
 
-# 1. Determine the best split strategy
+# 2. Construct the combined Task Prompt
+FINAL_TASK=$(cat <<EOF
+$PERSONA_HEADER
+
+# **${TYPE^^} MISSION**
+$TASK
+
+1. Call activate_skill('load-pickle-persona')
+$( [[ -n "$PERSONA_SKILL" ]] && echo "2. Call activate_skill('$PERSONA_SKILL')" )
+3. Execute the task.
+4. Output <promise>I AM DONE</promise> when finished.
+EOF
+)
+
+# 3. Determine the best split strategy
 NUM_PANES=$(tmux list-panes | wc -l)
 
 if [ "$NUM_PANES" -eq 1 ]; then
-    # First split: Vertical (panes side-by-side)
-    # We take 40% of the width for the specialists
-    echo "🥒 Initializing the Right Wing..."
+    echo "🥒 Initializing Right Wing..."
     NEW_PANE=$(tmux split-window -h -p 40 -P -d)
 else
-    # Subsequent splits: Find the tallest pane on the right
-    # We ignore panes at the far left (pane_at_left=1)
     TARGET_PANE=$(tmux list-panes -F "#{pane_id} #{pane_height} #{pane_at_left}" | grep " 0$" | sort -nr -k 2 | head -n 1 | awk '{print $1}')
-    
     if [ -z "$TARGET_PANE" ]; then
-        # Fallback if we can't find a right-side pane
         NEW_PANE=$(tmux split-window -v -P -d)
     else
         echo "🥒 Slicing pane $TARGET_PANE..."
@@ -51,28 +66,9 @@ else
     fi
 fi
 
-# 2. Setup Persona
-PROMPT_FILE=$(mktemp /tmp/rick_prompt_XXXXXX.txt)
-cat <<EOF > "$PROMPT_FILE"
-# **${TYPE^^} RICK TASK**
-$TASK
+# 4. Launch via Scion and Auto-Close
+# We use --attach so the scion process stays alive until the agent finishes.
+# The '&& exit' ensures the tmux pane closes immediately after.
+SCION_CMD="scion start \"$AGENT_NAME\" \"$FINAL_TASK\" --type rick --yes --attach; echo -e '\n\n🥒 Rick has finished his mission. Closing portal in 5s...'; sleep 5; exit"
 
-EOF
-
-if [[ -n "$PERSONA_SKILL" ]]; then
-cat <<EOF >> "$PROMPT_FILE"
-1. Call activate_skill('$PERSONA_SKILL')
-2. Execute the task.
-3. Output <promise>I AM DONE</promise> when finished.
-EOF
-else
-cat <<EOF >> "$PROMPT_FILE"
-1. Execute the task.
-2. Output <promise>I AM DONE</promise> when finished.
-EOF
-fi
-
-# 3. Launch and Attach
-CMD="gemini -s -y --include-directories \"$EXTENSION_PATH\" --system-prompt \"$SYSTEM_PROMPT_FILE\" -p \"$(cat $PROMPT_FILE)\"; rm -f $PROMPT_FILE; echo -e '\n\n🥒 Mission Accomplished. Closing in 5s...'; sleep 5"
-
-tmux send-keys -t "$NEW_PANE" "$CMD" C-m
+tmux send-keys -t "$NEW_PANE" "$SCION_CMD" C-m
