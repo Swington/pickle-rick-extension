@@ -9,13 +9,6 @@ import sys
 # Add scripts to path
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
-# We will implement scion_orchestrator in scripts/scion_orchestrator.py
-# For now, we mock the import if it doesn't exist yet, but we will write it soon.
-try:
-    import scion_orchestrator
-except ImportError:
-    pass
-
 class TestScionOrchestrator(unittest.TestCase):
     def setUp(self):
         self.test_dir = tempfile.mkdtemp()
@@ -25,8 +18,7 @@ class TestScionOrchestrator(unittest.TestCase):
         os.makedirs(os.path.join(self.task_folder, "subtasks", "01-task-3"))
         
         with open(os.path.join(self.task_folder, "task.md"), "w") as f:
-            f.write("# Parent Task
-Some description.")
+            f.write("# Parent Task\nSome description.")
 
     def tearDown(self):
         shutil.rmtree(self.test_dir)
@@ -51,18 +43,21 @@ Some description.")
             {"name": "01-task-3", "sessionStatus": "COMPLETED"}
         ]
         
+        # Poll 1: group 00 running
+        # Poll 2: group 00 completed
+        # Poll 3: group 01 completed
         mock_check_output.side_effect = [
             json.dumps(running_agents).encode(), # Poll 1 (Group 00)
             json.dumps(completed_agents).encode(), # Poll 2 (Group 00)
             json.dumps(completed_agents).encode()  # Group 01
         ]
         
-        # This is where we would call our orchestrator's main logic
+        # Import inside test to avoid early failure
         import scion_orchestrator
         orchestrator = scion_orchestrator.ScionOrchestrator(self.task_folder)
         orchestrator.run()
         
-        # Verify scion start was called for each subtask
+        # Verify scion start was called for each subtask (00-task-1, 00-task-2, then 01-task-3)
         self.assertEqual(mock_run.call_count, 3)
         
         # Check if children.txt was created
