@@ -323,10 +323,36 @@ python3 {scripts_dir}/task_board.py --team-dir "{team_dir}" create --subject "<t
 - Be precise in your communication. Include code in messages when suggesting fixes.
 """
 
+    @staticmethod
+    def _resolve_gemini_model():
+        """Read the model from ~/.gemini/settings.json.
+
+        The settings file stores the model as either a plain string or a
+        nested object ``{"model": "<id>"}``.  The gemini CLI's ``-s`` mode
+        sometimes fails to parse the nested form, so we resolve it here and
+        pass ``--model`` explicitly.
+
+        Returns the model id string, or None if unresolvable.
+        """
+        settings_path = Path.home() / ".gemini" / "settings.json"
+        try:
+            if settings_path.exists():
+                data = json.loads(settings_path.read_text())
+                model = data.get("model")
+                if isinstance(model, dict):
+                    return model.get("model")
+                if isinstance(model, str):
+                    return model
+        except (json.JSONDecodeError, OSError):
+            pass
+        return None
+
     def _build_agent_command(self, agent_name, prompt, extension_root, log_file, cwd):
         """Build the shell command to run the agent.
 
         Reads the team config to determine whether to propagate --yolo.
+        Resolves the gemini model from settings to avoid the
+        ``model.startsWith is not a function`` error.
         """
         import shlex
 
@@ -340,6 +366,12 @@ python3 {scripts_dir}/task_board.py --team-dir "{team_dir}" create --subject "<t
         cmd += "gemini -s"
         if yolo:
             cmd += " -y"
+
+        # Resolve model to avoid nested-object parse failure
+        model = self._resolve_gemini_model()
+        if model:
+            cmd += f" --model {shlex.quote(model)}"
+
         for inc in includes:
             cmd += f" --include-directories {shlex.quote(inc)}"
         cmd += f" -p {shlex.quote(prompt)}"
