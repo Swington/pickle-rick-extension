@@ -11,7 +11,11 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from filelock import FileLock, Timeout
+try:
+    from filelock import FileLock, Timeout
+except ImportError:
+    FileLock = None
+    Timeout = Exception
 
 
 class TaskBoard:

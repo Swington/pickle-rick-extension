@@ -32,6 +32,28 @@ from task_board import TaskBoard
 TEAMS_ROOT = Path.home() / ".gemini" / "extensions" / "pickle-rick" / "teams"
 
 
+def detect_current_tmux_session():
+    """Return the current tmux session name if running inside tmux.
+
+    Checks $TMUX env var first, then falls back to querying tmux directly.
+    Returns None if not inside a tmux session.
+    """
+    tmux_env = os.environ.get("TMUX", "")
+    if tmux_env:
+        # $TMUX format: /tmp/tmux-UID/default,PID,INDEX
+        # Get session name from tmux
+        try:
+            result = subprocess.run(
+                ["tmux", "display-message", "-p", "#{session_name}"],
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except (OSError, FileNotFoundError):
+            pass
+    return None
+
+
 def detect_parent_yolo():
     """Detect if the parent gemini process was launched with --yolo or -y.
 
@@ -102,12 +124,18 @@ class TeamManager:
         # Create manager mailbox
         AgentMailbox.create_agent_mailbox(str(self.team_dir), "manager")
 
+        # Prefer opening panes in the current tmux session if we're already
+        # inside one; otherwise create a dedicated session later.
+        current_session = detect_current_tmux_session()
+        tmux_session = current_session or f"pickle-team-{self.team_name}"
+
         config = {
             "name": self.team_name,
             "description": description,
             "yolo": yolo,
             "created_at": datetime.now(timezone.utc).isoformat(),
-            "tmux_session": f"pickle-team-{self.team_name}",
+            "tmux_session": tmux_session,
+            "use_existing_session": current_session is not None,
             "members": [
                 {
                     "name": "manager",
@@ -133,21 +161,39 @@ class TeamManager:
     def delete_team(self):
         """Delete the team and all its resources."""
         if self.team_dir.exists():
-            # Kill tmux session if it exists
             config = json.loads(self.config_path.read_text()) if self.config_path.exists() else {}
-            session = config.get("tmux_session", f"pickle-team-{self.team_name}")
-            subprocess.run(
-                ["tmux", "kill-session", "-t", session],
-                capture_output=True,
-            )
+            use_existing = config.get("use_existing_session", False)
+
+            if not use_existing:
+                # Only kill the tmux session if we created it ourselves
+                session = config.get("tmux_session", f"pickle-team-{self.team_name}")
+                subprocess.run(
+                    ["tmux", "kill-session", "-t", session],
+                    capture_output=True,
+                )
+            else:
+                # Kill individual agent panes but leave the session alive
+                for member in config.get("members", []):
+                    pane_id = member.get("pane_id")
+                    if pane_id:
+                        subprocess.run(
+                            ["tmux", "kill-pane", "-t", pane_id],
+                            capture_output=True,
+                        )
             shutil.rmtree(self.team_dir)
 
     # ── Agent Spawning ───────────────────────────────────────────────
 
     def setup_tmux_session(self):
-        """Create the tmux session for the team."""
+        """Ensure a tmux session is ready for agent panes.
+
+        If the team was created inside an existing tmux session, that session
+        is reused and agent panes open right next to the user's terminal.
+        Otherwise a dedicated detached session is created.
+        """
         config = self.load_team()
         session = config["tmux_session"]
+        use_existing = config.get("use_existing_session", False)
 
         # Check if session already exists
         result = subprocess.run(
@@ -157,6 +203,13 @@ class TeamManager:
         if result.returncode == 0:
             self.tmux_session = session
             return session
+
+        if use_existing:
+            # The saved session disappeared — fall back to a new one
+            session = f"pickle-team-{self.team_name}"
+            config["tmux_session"] = session
+            config["use_existing_session"] = False
+            self.config_path.write_text(json.dumps(config, indent=2))
 
         # Create new tmux session (detached)
         subprocess.run(
@@ -447,10 +500,25 @@ python3 {scripts_dir}/task_board.py --team-dir "{team_dir}" create --subject "<t
         return False
 
     def kill_all_agents(self):
-        """Force kill all agent panes and destroy tmux session."""
+        """Force kill all agent panes.
+
+        If the team uses the user's existing tmux session, only the agent
+        panes are killed (not the session itself).
+        """
         config = self.load_team()
+        use_existing = config.get("use_existing_session", False)
         session = config.get("tmux_session")
-        if session:
+
+        if use_existing:
+            # Kill individual agent panes, preserve the user's session
+            for member in config["members"]:
+                pane_id = member.get("pane_id")
+                if pane_id:
+                    subprocess.run(
+                        ["tmux", "kill-pane", "-t", pane_id],
+                        capture_output=True,
+                    )
+        elif session:
             subprocess.run(
                 ["tmux", "kill-session", "-t", session],
                 capture_output=True,
