@@ -69,3 +69,51 @@ Optional arguments:
 ```bash
 /eat-pickle
 ```
+
+### 6. Council of Ricks (Multi-Agent Teams)
+
+The Council of Ricks provides multi-agent team orchestration, enabling multiple Gemini CLI agents to work in parallel on complex tasks. Each agent runs in a separate tmux pane for visual monitoring.
+
+#### Architecture
+
+- **`scripts/team_manager.py`**: Core team management — creates teams, spawns agents in tmux panes, monitors progress, handles shutdown.
+- **`scripts/agent_mailbox.py`**: Inter-agent communication via file-based mailbox. Supports direct messages and broadcasts.
+- **`scripts/task_board.py`**: Shared task management with status tracking and dependencies.
+- **`commands/council.toml`**: Entry point command for starting a Council session.
+- **`skills/council-rick/SKILL.md`**: Skill definition for the Manager Rick persona.
+
+#### Key Features
+
+1. **Team Creation**: Shared task board + agent mailboxes in `~/.gemini/extensions/pickle-rick/teams/`
+2. **Agent Spawning**: Each agent runs `gemini` CLI in a separate tmux pane
+3. **Inter-Agent Messaging**: Direct messages (DM) and broadcasts between agents
+4. **Shared Task Board**: Create, claim, update, complete tasks with dependency tracking
+5. **Manager Oversight**: View agent logs, check inboxes, monitor task progress
+6. **Visual Monitoring**: Attach to the tmux session to watch all agents in real-time
+7. **Graceful Shutdown**: Message-based shutdown protocol with force-kill fallback
+
+#### Starting a Council Session
+```bash
+/council "Build a REST API for user management"
+```
+
+#### Managing Teams via CLI
+```bash
+# Create a team
+python3 scripts/team_manager.py create --name "my-team" --description "Feature X"
+
+# Spawn agents
+python3 scripts/team_manager.py spawn --team "my-team" --name "rick-dev" --type dev --task "Implement the API"
+python3 scripts/team_manager.py spawn --team "my-team" --name "rick-tester" --type tester --task "Write integration tests"
+
+# Monitor
+python3 scripts/team_manager.py list --team "my-team"
+python3 scripts/team_manager.py logs --team "my-team" --agent "rick-dev"
+
+# Attach to tmux session
+python3 scripts/team_manager.py attach --team "my-team"
+
+# Shutdown
+python3 scripts/team_manager.py shutdown --team "my-team"
+python3 scripts/team_manager.py delete --team "my-team"
+```

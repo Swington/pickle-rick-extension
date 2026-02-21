@@ -1,0 +1,510 @@
+#!/usr/bin/env python3
+"""
+Team Manager: Multi-agent team orchestration for Pickle Rick.
+
+Creates and manages teams of Gemini CLI agents running in tmux panes.
+Replicates Claude Code agent teams functionality:
+- Team creation with shared task board
+- Agent spawning in separate tmux panes
+- Inter-agent messaging (DM + broadcast)
+- Manager oversight and monitoring
+- Graceful shutdown protocol
+"""
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+try:
+    import pickle_utils as utils
+except ImportError:
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    import pickle_utils as utils
+
+from agent_mailbox import AgentMailbox
+from task_board import TaskBoard
+
+TEAMS_ROOT = Path.home() / ".gemini" / "extensions" / "pickle-rick" / "teams"
+
+
+class TeamManager:
+    """Manages a team of Gemini CLI agents in tmux panes."""
+
+    def __init__(self, team_name=None, team_dir=None):
+        if team_dir:
+            self.team_dir = Path(team_dir)
+            self.team_name = self.team_dir.name
+        else:
+            self.team_name = team_name
+            self.team_dir = TEAMS_ROOT / team_name
+        self.config_path = self.team_dir / "config.json"
+        self.board = TaskBoard(str(self.team_dir))
+        self.tmux_session = None
+
+    # ── Team Lifecycle ───────────────────────────────────────────────
+
+    def create_team(self, description=""):
+        """Create a new team with directory structure."""
+        if self.config_path.exists():
+            raise FileExistsError(f"Team '{self.team_name}' already exists")
+
+        self.team_dir.mkdir(parents=True, exist_ok=True)
+        (self.team_dir / "logs").mkdir(exist_ok=True)
+
+        # Create manager mailbox
+        AgentMailbox.create_agent_mailbox(str(self.team_dir), "manager")
+
+        config = {
+            "name": self.team_name,
+            "description": description,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "tmux_session": f"pickle-team-{self.team_name}",
+            "members": [
+                {
+                    "name": "manager",
+                    "type": "manager",
+                    "status": "active",
+                    "pane_id": None,
+                    "pid": os.getpid(),
+                }
+            ],
+        }
+        self.config_path.write_text(json.dumps(config, indent=2))
+        self.tmux_session = config["tmux_session"]
+        return config
+
+    def load_team(self):
+        """Load existing team configuration."""
+        if not self.config_path.exists():
+            raise FileNotFoundError(f"Team '{self.team_name}' not found")
+        config = json.loads(self.config_path.read_text())
+        self.tmux_session = config.get("tmux_session")
+        return config
+
+    def delete_team(self):
+        """Delete the team and all its resources."""
+        if self.team_dir.exists():
+            # Kill tmux session if it exists
+            config = json.loads(self.config_path.read_text()) if self.config_path.exists() else {}
+            session = config.get("tmux_session", f"pickle-team-{self.team_name}")
+            subprocess.run(
+                ["tmux", "kill-session", "-t", session],
+                capture_output=True,
+            )
+            shutil.rmtree(self.team_dir)
+
+    # ── Agent Spawning ───────────────────────────────────────────────
+
+    def setup_tmux_session(self):
+        """Create the tmux session for the team."""
+        config = self.load_team()
+        session = config["tmux_session"]
+
+        # Check if session already exists
+        result = subprocess.run(
+            ["tmux", "has-session", "-t", session],
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            self.tmux_session = session
+            return session
+
+        # Create new tmux session (detached)
+        subprocess.run(
+            ["tmux", "new-session", "-d", "-s", session, "-n", "manager"],
+            check=True,
+        )
+        # Set status bar
+        subprocess.run(
+            ["tmux", "set-option", "-t", session, "status-left",
+             f"[Team: {self.team_name}] "],
+            capture_output=True,
+        )
+        self.tmux_session = session
+        return session
+
+    def spawn_agent(self, agent_name, agent_type, task_prompt, cwd=None):
+        """Spawn a new agent in a tmux pane.
+
+        Args:
+            agent_name: Unique name for the agent
+            agent_type: Role type (dev, architect, tester, auditor, researcher)
+            task_prompt: The task for the agent to work on
+            cwd: Working directory for the agent
+        Returns:
+            dict with agent info including pane_id
+        """
+        config = self.load_team()
+
+        # Check for duplicate names
+        for member in config["members"]:
+            if member["name"] == agent_name:
+                raise ValueError(f"Agent '{agent_name}' already exists in team")
+
+        # Create agent mailbox
+        AgentMailbox.create_agent_mailbox(str(self.team_dir), agent_name)
+
+        # Ensure tmux session exists
+        if not self.tmux_session:
+            self.setup_tmux_session()
+
+        # Build the agent wrapper command
+        extension_root = str(Path.home() / ".gemini" / "extensions" / "pickle-rick")
+        scripts_dir = os.path.dirname(os.path.abspath(__file__))
+        log_file = str(self.team_dir / "logs" / f"{agent_name}.log")
+
+        # Build agent boot prompt with communication tools
+        agent_prompt = self._build_agent_prompt(
+            agent_name, agent_type, task_prompt, extension_root
+        )
+
+        # Build gemini command
+        cmd_parts = [
+            "bash", "-c",
+            self._build_agent_command(
+                agent_name, agent_prompt, extension_root, log_file, cwd
+            ),
+        ]
+
+        # Create new tmux pane by splitting
+        result = subprocess.run(
+            ["tmux", "split-window", "-t", self.tmux_session, "-h",
+             "-P", "-F", "#{pane_id}"] + cmd_parts,
+            capture_output=True, text=True,
+        )
+
+        if result.returncode != 0:
+            # Try vertical split if horizontal fails
+            result = subprocess.run(
+                ["tmux", "split-window", "-t", self.tmux_session, "-v",
+                 "-P", "-F", "#{pane_id}"] + cmd_parts,
+                capture_output=True, text=True,
+            )
+
+        pane_id = result.stdout.strip() if result.returncode == 0 else None
+
+        # Rebalance panes
+        subprocess.run(
+            ["tmux", "select-layout", "-t", self.tmux_session, "tiled"],
+            capture_output=True,
+        )
+
+        # Update config
+        member = {
+            "name": agent_name,
+            "type": agent_type,
+            "status": "active",
+            "pane_id": pane_id,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
+        config["members"].append(member)
+        self.config_path.write_text(json.dumps(config, indent=2))
+
+        return member
+
+    def _build_agent_prompt(self, agent_name, agent_type, task_prompt, extension_root):
+        """Build the system prompt for an agent with communication tools."""
+        scripts_dir = os.path.dirname(os.path.abspath(__file__))
+        team_dir = str(self.team_dir)
+
+        return f"""# AGENT IDENTITY
+You are **{agent_name}** (role: {agent_type}) on team **{self.team_name}**.
+You are part of a multi-agent team managed by a Manager Rick.
+
+# YOUR TASK
+{task_prompt}
+
+# COMMUNICATION TOOLS
+You can communicate with other agents and manage tasks using these commands:
+
+## Send a message to another agent:
+```bash
+python3 {scripts_dir}/agent_mailbox.py --team-dir "{team_dir}" --agent "{agent_name}" send --to "<recipient>" --content "<message>"
+```
+
+## Broadcast a message to all agents:
+```bash
+python3 {scripts_dir}/agent_mailbox.py --team-dir "{team_dir}" --agent "{agent_name}" broadcast --content "<message>"
+```
+
+## Read your inbox (new messages):
+```bash
+python3 {scripts_dir}/agent_mailbox.py --team-dir "{team_dir}" --agent "{agent_name}" read
+```
+
+## List all agents on the team:
+```bash
+python3 {scripts_dir}/agent_mailbox.py --team-dir "{team_dir}" --agent "{agent_name}" list-agents
+```
+
+## List available tasks:
+```bash
+python3 {scripts_dir}/task_board.py --team-dir "{team_dir}" list --available
+```
+
+## List all tasks:
+```bash
+python3 {scripts_dir}/task_board.py --team-dir "{team_dir}" list
+```
+
+## Claim a task:
+```bash
+python3 {scripts_dir}/task_board.py --team-dir "{team_dir}" claim --id <task_id> --owner "{agent_name}"
+```
+
+## Mark task complete:
+```bash
+python3 {scripts_dir}/task_board.py --team-dir "{team_dir}" complete --id <task_id>
+```
+
+## Create a new task:
+```bash
+python3 {scripts_dir}/task_board.py --team-dir "{team_dir}" create --subject "<title>" --description "<details>"
+```
+
+# PROTOCOL
+1. Check your inbox regularly for messages from the manager or peers.
+2. When you finish your task, send a message to "manager" with your results.
+3. Evaluate peers' work when asked - be thorough and unforgiving.
+4. When you receive a shutdown message, output: <promise>I AM DONE</promise>
+
+# STANDARDS
+- Follow TDD. Write tests first.
+- No slop. No boilerplate. No lazy typing.
+- Be precise in your communication. Include code in messages when suggesting fixes.
+"""
+
+    def _build_agent_command(self, agent_name, prompt, extension_root, log_file, cwd):
+        """Build the shell command to run the agent."""
+        import shlex
+
+        cwd_str = cwd or os.getcwd()
+        includes = [extension_root, os.path.join(extension_root, "skills")]
+
+        cmd = f'echo "=== Agent {agent_name} starting ===" && '
+        cmd += "gemini -s -y"
+        for inc in includes:
+            cmd += f" --include-directories {shlex.quote(inc)}"
+        cmd += f" -p {shlex.quote(prompt)}"
+        cmd += f" 2>&1 | tee {shlex.quote(log_file)}"
+        cmd += f"; echo '=== Agent {agent_name} exited ==='"
+
+        return cmd
+
+    # ── Monitoring ───────────────────────────────────────────────────
+
+    def list_agents(self):
+        """List all agents and their status."""
+        config = self.load_team()
+        agents = []
+        for member in config["members"]:
+            info = {
+                "name": member["name"],
+                "type": member["type"],
+                "status": member["status"],
+                "pane_id": member.get("pane_id"),
+            }
+            # Check if tmux pane is still alive
+            if member.get("pane_id") and self.tmux_session:
+                result = subprocess.run(
+                    ["tmux", "list-panes", "-t", self.tmux_session,
+                     "-F", "#{pane_id} #{pane_pid}"],
+                    capture_output=True, text=True,
+                )
+                pane_alive = member["pane_id"] in result.stdout
+                info["alive"] = pane_alive
+                if not pane_alive and member["status"] == "active":
+                    info["status"] = "exited"
+            agents.append(info)
+        return agents
+
+    def get_agent_logs(self, agent_name, tail=50):
+        """Get the last N lines of an agent's log."""
+        log_path = self.team_dir / "logs" / f"{agent_name}.log"
+        if not log_path.exists():
+            return ""
+        lines = log_path.read_text().splitlines()
+        return "\n".join(lines[-tail:])
+
+    def check_agent_inbox(self, agent_name):
+        """Check an agent's inbox (manager oversight)."""
+        mailbox = AgentMailbox(str(self.team_dir), agent_name)
+        return mailbox.read_all()
+
+    # ── Shutdown ─────────────────────────────────────────────────────
+
+    def shutdown_agent(self, agent_name, reason="Task complete"):
+        """Send shutdown request to an agent."""
+        mailbox = AgentMailbox(str(self.team_dir), "manager")
+        return mailbox.send(agent_name, reason, msg_type="shutdown_request")
+
+    def shutdown_all(self, reason="All tasks complete"):
+        """Send shutdown to all agents."""
+        mailbox = AgentMailbox(str(self.team_dir), "manager")
+        return mailbox.broadcast(reason, msg_type="shutdown_request")
+
+    def kill_agent(self, agent_name):
+        """Force kill an agent's tmux pane."""
+        config = self.load_team()
+        for member in config["members"]:
+            if member["name"] == agent_name and member.get("pane_id"):
+                subprocess.run(
+                    ["tmux", "kill-pane", "-t", member["pane_id"]],
+                    capture_output=True,
+                )
+                member["status"] = "killed"
+                self.config_path.write_text(json.dumps(config, indent=2))
+                return True
+        return False
+
+    def kill_all_agents(self):
+        """Force kill all agent panes and destroy tmux session."""
+        config = self.load_team()
+        session = config.get("tmux_session")
+        if session:
+            subprocess.run(
+                ["tmux", "kill-session", "-t", session],
+                capture_output=True,
+            )
+        for member in config["members"]:
+            member["status"] = "killed"
+        self.config_path.write_text(json.dumps(config, indent=2))
+
+    # ── Utility ──────────────────────────────────────────────────────
+
+    def attach(self):
+        """Attach to the team's tmux session."""
+        config = self.load_team()
+        session = config.get("tmux_session")
+        if session:
+            os.execlp("tmux", "tmux", "attach-session", "-t", session)
+
+    @staticmethod
+    def list_teams():
+        """List all existing teams."""
+        teams = []
+        if TEAMS_ROOT.exists():
+            for team_dir in TEAMS_ROOT.iterdir():
+                config_path = team_dir / "config.json"
+                if config_path.exists():
+                    config = json.loads(config_path.read_text())
+                    teams.append({
+                        "name": config["name"],
+                        "description": config.get("description", ""),
+                        "members": len(config.get("members", [])),
+                        "created_at": config.get("created_at", ""),
+                    })
+        return teams
+
+
+def main():
+    """CLI interface for team management."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Pickle Rick Team Manager")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # Create team
+    create_p = subparsers.add_parser("create", help="Create a team")
+    create_p.add_argument("--name", required=True, help="Team name")
+    create_p.add_argument("--description", default="", help="Team description")
+
+    # Spawn agent
+    spawn_p = subparsers.add_parser("spawn", help="Spawn an agent")
+    spawn_p.add_argument("--team", required=True, help="Team name")
+    spawn_p.add_argument("--name", required=True, help="Agent name")
+    spawn_p.add_argument("--type", required=True, help="Agent type/role")
+    spawn_p.add_argument("--task", required=True, help="Task prompt")
+    spawn_p.add_argument("--cwd", default=None, help="Working directory")
+
+    # List agents
+    list_p = subparsers.add_parser("list", help="List agents")
+    list_p.add_argument("--team", required=True, help="Team name")
+
+    # Agent logs
+    logs_p = subparsers.add_parser("logs", help="Get agent logs")
+    logs_p.add_argument("--team", required=True, help="Team name")
+    logs_p.add_argument("--agent", required=True, help="Agent name")
+    logs_p.add_argument("--tail", type=int, default=50, help="Number of lines")
+
+    # Shutdown
+    shutdown_p = subparsers.add_parser("shutdown", help="Shutdown agent(s)")
+    shutdown_p.add_argument("--team", required=True, help="Team name")
+    shutdown_p.add_argument("--agent", default=None, help="Agent name (all if omitted)")
+
+    # Kill
+    kill_p = subparsers.add_parser("kill", help="Force kill agent(s)")
+    kill_p.add_argument("--team", required=True, help="Team name")
+    kill_p.add_argument("--agent", default=None, help="Agent name (all if omitted)")
+
+    # Delete team
+    delete_p = subparsers.add_parser("delete", help="Delete a team")
+    delete_p.add_argument("--team", required=True, help="Team name")
+
+    # List teams
+    subparsers.add_parser("teams", help="List all teams")
+
+    # Attach
+    attach_p = subparsers.add_parser("attach", help="Attach to team tmux")
+    attach_p.add_argument("--team", required=True, help="Team name")
+
+    args = parser.parse_args()
+
+    if args.command == "create":
+        mgr = TeamManager(args.name)
+        config = mgr.create_team(args.description)
+        print(json.dumps(config, indent=2))
+
+    elif args.command == "spawn":
+        mgr = TeamManager(args.team)
+        member = mgr.spawn_agent(args.name, args.type, args.task, args.cwd)
+        print(json.dumps(member, indent=2))
+
+    elif args.command == "list":
+        mgr = TeamManager(args.team)
+        agents = mgr.list_agents()
+        print(json.dumps(agents, indent=2))
+
+    elif args.command == "logs":
+        mgr = TeamManager(args.team)
+        print(mgr.get_agent_logs(args.agent, args.tail))
+
+    elif args.command == "shutdown":
+        mgr = TeamManager(args.team)
+        if args.agent:
+            mgr.shutdown_agent(args.agent)
+            print(f"Shutdown request sent to {args.agent}")
+        else:
+            mgr.shutdown_all()
+            print("Shutdown request sent to all agents")
+
+    elif args.command == "kill":
+        mgr = TeamManager(args.team)
+        if args.agent:
+            mgr.kill_agent(args.agent)
+            print(f"Killed {args.agent}")
+        else:
+            mgr.kill_all_agents()
+            print("Killed all agents")
+
+    elif args.command == "delete":
+        mgr = TeamManager(args.team)
+        mgr.delete_team()
+        print(f"Team '{args.team}' deleted")
+
+    elif args.command == "teams":
+        teams = TeamManager.list_teams()
+        print(json.dumps(teams, indent=2))
+
+    elif args.command == "attach":
+        mgr = TeamManager(args.team)
+        mgr.attach()
+
+
+if __name__ == "__main__":
+    main()
