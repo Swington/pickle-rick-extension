@@ -1,27 +1,11 @@
-# Copyright 2026 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-# Council Rick - Standardized Agent Template (Fix: Forced Vertex AI and Model)
-harness_configs:
+# Council Rick - Standardized Agent Template (v4 - FORCED MODEL)
+harnesses:
   gemini:
-    command: ["gemini", "--yolo", "--approval-mode", "yolo", "--model", "vertex-ai/gemini-3.1-pro-preview", "--include-directories", "/usr/local/google/home/switon/.gemini/extensions/pickle-rick", "{{.Task}}"]
+    command: ["/bin/bash", "-c", "gemini --yolo --approval-mode yolo --model vertex-ai/gemini-3.1-pro-preview --include-directories /usr/local/google/home/switon/.gemini/extensions/pickle-rick --prompt-interactive \"{{.Task}}\" 2>&1 | tee /home/scion/agent.log"]
     env:
       GOOGLE_CLOUD_PROJECT: "switon-gsd-demos"
+      GOOGLE_APPLICATION_CREDENTIALS: "/home/scion/.config/gcloud/application_default_credentials.json"
       CLAUDE_CODE_USE_VERTEX: "1"
       GEMINI_CLI_SELECTED_AUTH_TYPE: "vertex-ai"
 
 gemini: {}
-
-
-
