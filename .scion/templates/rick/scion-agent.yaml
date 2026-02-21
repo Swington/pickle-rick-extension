@@ -12,9 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Council Rick - Standardized Agent Template (Fix: Removed unsupported --system-prompt)
+# Council Rick - Standardized Agent Template (Fix: Forced Vertex AI and Model)
 harness_configs:
   gemini:
-    command: ["gemini", "--yolo", "--include-directories", "/usr/local/google/home/switon/.gemini/extensions/pickle-rick", "{{.Task}}"]
+    command: ["gemini", "--yolo", "--approval-mode", "yolo", "--model", "vertex-ai/gemini-3.1-pro-preview", "--include-directories", "/usr/local/google/home/switon/.gemini/extensions/pickle-rick", "{{.Task}}"]
+    env:
+      GOOGLE_CLOUD_PROJECT: "switon-gsd-demos"
+      CLAUDE_CODE_USE_VERTEX: "1"
+      GEMINI_CLI_SELECTED_AUTH_TYPE: "vertex-ai"
 
 gemini: {}
+
+
+
