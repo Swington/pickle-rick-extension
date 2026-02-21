@@ -10,7 +10,78 @@ from pathlib import Path
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
-from team_manager import TeamManager
+from team_manager import TeamManager, detect_parent_yolo
+
+
+class TestDetectParentYolo(unittest.TestCase):
+    """Tests for yolo mode detection from parent process."""
+
+    def test_env_var_true(self):
+        with patch.dict(os.environ, {"PICKLE_YOLO": "1"}):
+            self.assertTrue(detect_parent_yolo())
+
+    def test_env_var_true_string(self):
+        with patch.dict(os.environ, {"PICKLE_YOLO": "true"}):
+            self.assertTrue(detect_parent_yolo())
+
+    def test_env_var_false(self):
+        with patch.dict(os.environ, {"PICKLE_YOLO": "0"}):
+            self.assertFalse(detect_parent_yolo())
+
+    def test_env_var_false_string(self):
+        with patch.dict(os.environ, {"PICKLE_YOLO": "no"}):
+            self.assertFalse(detect_parent_yolo())
+
+    @patch.dict(os.environ, {}, clear=True)
+    @patch("team_manager.Path")
+    def test_cmdline_yolo_flag(self, mock_path_cls):
+        # Simulate /proc/<ppid>/cmdline containing --yolo
+        mock_path_instance = MagicMock()
+        mock_path_instance.exists.return_value = True
+        mock_path_instance.read_bytes.return_value = b"gemini\x00--yolo\x00-p\x00task"
+        mock_path_cls.return_value = mock_path_instance
+        # Remove PICKLE_YOLO if present
+        os.environ.pop("PICKLE_YOLO", None)
+        self.assertTrue(detect_parent_yolo())
+
+    @patch.dict(os.environ, {}, clear=True)
+    @patch("team_manager.Path")
+    def test_cmdline_y_flag(self, mock_path_cls):
+        mock_path_instance = MagicMock()
+        mock_path_instance.exists.return_value = True
+        mock_path_instance.read_bytes.return_value = b"gemini\x00-s\x00-y\x00-p\x00task"
+        mock_path_cls.return_value = mock_path_instance
+        os.environ.pop("PICKLE_YOLO", None)
+        self.assertTrue(detect_parent_yolo())
+
+    @patch.dict(os.environ, {}, clear=True)
+    @patch("team_manager.Path")
+    def test_cmdline_approval_mode_yolo(self, mock_path_cls):
+        mock_path_instance = MagicMock()
+        mock_path_instance.exists.return_value = True
+        mock_path_instance.read_bytes.return_value = b"gemini\x00--approval-mode\x00yolo\x00-p\x00task"
+        mock_path_cls.return_value = mock_path_instance
+        os.environ.pop("PICKLE_YOLO", None)
+        self.assertTrue(detect_parent_yolo())
+
+    @patch.dict(os.environ, {}, clear=True)
+    @patch("team_manager.Path")
+    def test_cmdline_no_yolo(self, mock_path_cls):
+        mock_path_instance = MagicMock()
+        mock_path_instance.exists.return_value = True
+        mock_path_instance.read_bytes.return_value = b"gemini\x00-s\x00-p\x00task"
+        mock_path_cls.return_value = mock_path_instance
+        os.environ.pop("PICKLE_YOLO", None)
+        self.assertFalse(detect_parent_yolo())
+
+    @patch.dict(os.environ, {}, clear=True)
+    @patch("team_manager.Path")
+    def test_no_proc_filesystem(self, mock_path_cls):
+        mock_path_instance = MagicMock()
+        mock_path_instance.exists.return_value = False
+        mock_path_cls.return_value = mock_path_instance
+        os.environ.pop("PICKLE_YOLO", None)
+        self.assertFalse(detect_parent_yolo())
 
 
 class TestTeamManagerCreate(unittest.TestCase):
@@ -50,6 +121,35 @@ class TestTeamManagerCreate(unittest.TestCase):
         mgr2 = TeamManager(team_dir=self.team_dir)
         config = mgr2.load_team()
         self.assertEqual(config["name"], "test-team")
+
+    def test_create_team_explicit_yolo_true(self):
+        mgr = TeamManager(team_dir=self.team_dir)
+        config = mgr.create_team("Test", yolo=True)
+        self.assertTrue(config["yolo"])
+
+    def test_create_team_explicit_yolo_false(self):
+        mgr = TeamManager(team_dir=self.team_dir)
+        config = mgr.create_team("Test", yolo=False)
+        self.assertFalse(config["yolo"])
+
+    @patch("team_manager.detect_parent_yolo", return_value=True)
+    def test_create_team_auto_detects_yolo(self, mock_detect):
+        mgr = TeamManager(team_dir=self.team_dir)
+        config = mgr.create_team("Test")
+        self.assertTrue(config["yolo"])
+        mock_detect.assert_called_once()
+
+    @patch("team_manager.detect_parent_yolo", return_value=False)
+    def test_create_team_auto_detects_no_yolo(self, mock_detect):
+        mgr = TeamManager(team_dir=self.team_dir)
+        config = mgr.create_team("Test")
+        self.assertFalse(config["yolo"])
+
+    def test_yolo_stored_in_config_file(self):
+        mgr = TeamManager(team_dir=self.team_dir)
+        mgr.create_team("Test", yolo=True)
+        config = json.loads(Path(self.team_dir, "config.json").read_text())
+        self.assertTrue(config["yolo"])
 
     def test_load_nonexistent_team_raises(self):
         mgr = TeamManager(team_dir=os.path.join(self.test_dir, "nonexistent"))
@@ -118,6 +218,74 @@ class TestTeamManagerSpawn(unittest.TestCase):
         self.assertIn("list-agents", prompt)
         self.assertIn("claim", prompt)
         self.assertIn("complete", prompt)
+
+
+class TestYoloPropagation(unittest.TestCase):
+    """Tests that --yolo flag propagates from team config to agent commands."""
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def test_agent_command_includes_y_when_yolo_true(self):
+        team_dir = os.path.join(self.test_dir, "yolo-team")
+        mgr = TeamManager(team_dir=team_dir)
+        mgr.create_team("Test", yolo=True)
+
+        cmd = mgr._build_agent_command("rick-dev", "prompt", "/ext", "/log", None)
+        # Should contain "gemini -s -y"
+        self.assertIn("gemini -s -y", cmd)
+
+    def test_agent_command_excludes_y_when_yolo_false(self):
+        team_dir = os.path.join(self.test_dir, "no-yolo-team")
+        mgr = TeamManager(team_dir=team_dir)
+        mgr.create_team("Test", yolo=False)
+
+        cmd = mgr._build_agent_command("rick-dev", "prompt", "/ext", "/log", None)
+        # Should contain "gemini -s" but NOT "gemini -s -y"
+        self.assertIn("gemini -s", cmd)
+        self.assertNotIn("gemini -s -y", cmd)
+
+    @patch("subprocess.run")
+    def test_full_spawn_propagates_yolo(self, mock_run):
+        """End-to-end: team created with yolo=True spawns agents with -y."""
+        team_dir = os.path.join(self.test_dir, "e2e-team")
+        mgr = TeamManager(team_dir=team_dir)
+        mgr.create_team("Test", yolo=True)
+        mgr.tmux_session = "test-session"
+        mock_run.return_value = MagicMock(returncode=0, stdout="%1\n")
+
+        mgr.spawn_agent("rick-dev", "dev", "Build X")
+
+        # Find the tmux split-window call and check the command contains -y
+        tmux_calls = [c for c in mock_run.call_args_list
+                      if "split-window" in str(c)]
+        self.assertTrue(len(tmux_calls) > 0)
+        cmd_str = str(tmux_calls[0])
+        self.assertIn("-y", cmd_str)
+
+    @patch("subprocess.run")
+    def test_full_spawn_no_yolo(self, mock_run):
+        """End-to-end: team created with yolo=False spawns agents without -y."""
+        team_dir = os.path.join(self.test_dir, "e2e-noyolo")
+        mgr = TeamManager(team_dir=team_dir)
+        mgr.create_team("Test", yolo=False)
+        mgr.tmux_session = "test-session"
+        mock_run.return_value = MagicMock(returncode=0, stdout="%1\n")
+
+        mgr.spawn_agent("rick-dev", "dev", "Build X")
+
+        tmux_calls = [c for c in mock_run.call_args_list
+                      if "split-window" in str(c)]
+        self.assertTrue(len(tmux_calls) > 0)
+        # The command string should have "gemini -s " but not "gemini -s -y"
+        cmd_str = str(tmux_calls[0])
+        self.assertIn("gemini -s", cmd_str)
+        # Check that -y does not appear as a standalone gemini flag
+        # (it might appear in other contexts like file paths)
+        self.assertIn("gemini -s ", cmd_str)  # ends with space, not -y
 
 
 class TestTeamManagerMonitoring(unittest.TestCase):

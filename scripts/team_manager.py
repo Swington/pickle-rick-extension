@@ -32,6 +32,39 @@ from task_board import TaskBoard
 TEAMS_ROOT = Path.home() / ".gemini" / "extensions" / "pickle-rick" / "teams"
 
 
+def detect_parent_yolo():
+    """Detect if the parent gemini process was launched with --yolo or -y.
+
+    Checks (in order):
+    1. PICKLE_YOLO env var (explicit override)
+    2. /proc/<ppid>/cmdline on Linux for --yolo, -y, or --approval-mode yolo
+    3. Falls back to False if undetectable
+    """
+    # 1. Explicit env var override
+    env_val = os.environ.get("PICKLE_YOLO", "").lower()
+    if env_val in ("1", "true", "yes"):
+        return True
+    if env_val in ("0", "false", "no"):
+        return False
+
+    # 2. Inspect parent process cmdline (Linux)
+    try:
+        ppid = os.getppid()
+        cmdline_path = Path(f"/proc/{ppid}/cmdline")
+        if cmdline_path.exists():
+            raw = cmdline_path.read_bytes()
+            args = raw.decode("utf-8", errors="replace").split("\0")
+            for i, arg in enumerate(args):
+                if arg in ("--yolo", "-y"):
+                    return True
+                if arg == "--approval-mode" and i + 1 < len(args) and args[i + 1] == "yolo":
+                    return True
+    except (OSError, PermissionError):
+        pass
+
+    return False
+
+
 class TeamManager:
     """Manages a team of Gemini CLI agents in tmux panes."""
 
@@ -48,13 +81,23 @@ class TeamManager:
 
     # ── Team Lifecycle ───────────────────────────────────────────────
 
-    def create_team(self, description=""):
-        """Create a new team with directory structure."""
+    def create_team(self, description="", yolo=None):
+        """Create a new team with directory structure.
+
+        Args:
+            description: Human-readable team purpose.
+            yolo: Propagate --yolo flag to subagents. If None, auto-detects
+                  from the parent gemini process.
+        """
         if self.config_path.exists():
             raise FileExistsError(f"Team '{self.team_name}' already exists")
 
         self.team_dir.mkdir(parents=True, exist_ok=True)
         (self.team_dir / "logs").mkdir(exist_ok=True)
+
+        # Auto-detect yolo mode from parent process if not explicitly set
+        if yolo is None:
+            yolo = detect_parent_yolo()
 
         # Create manager mailbox
         AgentMailbox.create_agent_mailbox(str(self.team_dir), "manager")
@@ -62,6 +105,7 @@ class TeamManager:
         config = {
             "name": self.team_name,
             "description": description,
+            "yolo": yolo,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "tmux_session": f"pickle-team-{self.team_name}",
             "members": [
@@ -280,14 +324,22 @@ python3 {scripts_dir}/task_board.py --team-dir "{team_dir}" create --subject "<t
 """
 
     def _build_agent_command(self, agent_name, prompt, extension_root, log_file, cwd):
-        """Build the shell command to run the agent."""
+        """Build the shell command to run the agent.
+
+        Reads the team config to determine whether to propagate --yolo.
+        """
         import shlex
+
+        config = self.load_team()
+        yolo = config.get("yolo", False)
 
         cwd_str = cwd or os.getcwd()
         includes = [extension_root, os.path.join(extension_root, "skills")]
 
         cmd = f'echo "=== Agent {agent_name} starting ===" && '
-        cmd += "gemini -s -y"
+        cmd += "gemini -s"
+        if yolo:
+            cmd += " -y"
         for inc in includes:
             cmd += f" --include-directories {shlex.quote(inc)}"
         cmd += f" -p {shlex.quote(prompt)}"
@@ -413,6 +465,15 @@ def main():
     create_p = subparsers.add_parser("create", help="Create a team")
     create_p.add_argument("--name", required=True, help="Team name")
     create_p.add_argument("--description", default="", help="Team description")
+    yolo_group = create_p.add_mutually_exclusive_group()
+    yolo_group.add_argument(
+        "--yolo", action="store_true", default=None,
+        help="Propagate --yolo (auto-approve) to subagents",
+    )
+    yolo_group.add_argument(
+        "--no-yolo", action="store_true", default=None,
+        help="Explicitly disable --yolo for subagents",
+    )
 
     # Spawn agent
     spawn_p = subparsers.add_parser("spawn", help="Spawn an agent")
@@ -457,7 +518,13 @@ def main():
 
     if args.command == "create":
         mgr = TeamManager(args.name)
-        config = mgr.create_team(args.description)
+        # Resolve yolo: explicit flag > auto-detect
+        yolo = None  # auto-detect
+        if getattr(args, "yolo", None):
+            yolo = True
+        elif getattr(args, "no_yolo", None):
+            yolo = False
+        config = mgr.create_team(args.description, yolo=yolo)
         print(json.dumps(config, indent=2))
 
     elif args.command == "spawn":
