@@ -1,0 +1,6 @@
+# Gemini harness configuration - FORCED PRO-PREVIEW
+harnesses:
+  gemini:
+    command: ["gemini", "--yolo", "--model", "vertex-ai/gemini-3.1-pro-preview", "--prompt-interactive", "{{.Task}}"]
+
+gemini: {}

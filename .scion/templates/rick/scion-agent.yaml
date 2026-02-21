@@ -1,0 +1,11 @@
+# Council Rick - Standardized Agent Template (v4 - FORCED MODEL)
+harnesses:
+  gemini:
+    command: ["/bin/bash", "-c", "gemini --yolo --approval-mode yolo --model vertex-ai/gemini-3.1-pro-preview --include-directories /usr/local/google/home/switon/.gemini/extensions/pickle-rick --prompt-interactive \"{{.Task}}\" 2>&1 | tee /home/scion/agent.log"]
+    env:
+      GOOGLE_CLOUD_PROJECT: "switon-gsd-demos"
+      GOOGLE_APPLICATION_CREDENTIALS: "/home/scion/.config/gcloud/application_default_credentials.json"
+      CLAUDE_CODE_USE_VERTEX: "1"
+      GEMINI_CLI_SELECTED_AUTH_TYPE: "vertex-ai"
+
+gemini: {}
