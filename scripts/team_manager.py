@@ -143,6 +143,14 @@ class TeamManager:
             except (OSError, FileNotFoundError):
                 pass
 
+        # Label the manager's pane
+        if manager_pane:
+            subprocess.run(
+                ["tmux", "select-pane", "-t", manager_pane,
+                 "-T", f"manager ({self.team_name})"],
+                capture_output=True,
+            )
+
         config = {
             "name": self.team_name,
             "description": description,
@@ -303,6 +311,26 @@ class TeamManager:
             )
 
         pane_id = result.stdout.strip() if result.returncode == 0 else None
+
+        # Name the pane so the user can identify which agent is which
+        if pane_id:
+            subprocess.run(
+                ["tmux", "select-pane", "-t", pane_id,
+                 "-T", f"{agent_name} ({agent_type})"],
+                capture_output=True,
+            )
+            # Enable pane border labels (idempotent)
+            subprocess.run(
+                ["tmux", "set-option", "-t", self.tmux_session,
+                 "pane-border-status", "top"],
+                capture_output=True,
+            )
+            subprocess.run(
+                ["tmux", "set-option", "-t", self.tmux_session,
+                 "pane-border-format",
+                 " #{pane_index}: #{pane_title} "],
+                capture_output=True,
+            )
 
         # Rebalance panes in the manager's window
         subprocess.run(
