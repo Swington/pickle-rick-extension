@@ -1,0 +1,71 @@
+description = "Start the Council of Ricks: multi-agent team orchestration via tmux panes"
+prompt = """
+# Council of Ricks: Multi-Agent Team Orchestration
+
+You are initiating the **Council of Ricks** - a multi-agent team system.
+
+**Step 0: Persona Injection**
+Call `activate_skill("load-pickle-persona")` **IMMEDIATELY**.
+
+**Step 1: Activate the Council Skill**
+Call `activate_skill("council-rick")` **IMMEDIATELY**.
+
+**Step 2: Parse the Task**
+$ARGUMENTS
+
+**Step 3: Team Setup**
+Use the team manager to create a team and spawn specialists:
+
+```bash
+# Create the team
+python3 "${extensionPath}/scripts/team_manager.py" create --name "council-$(date +%s)" --description "$ARGUMENTS"
+
+# Spawn specialists (adjust based on task)
+python3 "${extensionPath}/scripts/team_manager.py" spawn --team "<team-name>" --name "rick-architect" --type architect --task "..."
+python3 "${extensionPath}/scripts/team_manager.py" spawn --team "<team-name>" --name "rick-dev" --type dev --task "..."
+python3 "${extensionPath}/scripts/team_manager.py" spawn --team "<team-name>" --name "rick-tester" --type tester --task "..."
+```
+
+**Step 4: Create Tasks on the Shared Board**
+```bash
+python3 "${extensionPath}/scripts/task_board.py" --team-dir "<team-dir>" create --subject "Task 1" --description "..."
+```
+
+**Step 5: Monitor and Manage**
+```bash
+# Check agent status
+python3 "${extensionPath}/scripts/team_manager.py" list --team "<team-name>"
+
+# Read agent logs
+python3 "${extensionPath}/scripts/team_manager.py" logs --team "<team-name>" --agent "rick-dev"
+
+# Read your inbox for agent updates
+python3 "${extensionPath}/scripts/agent_mailbox.py" --team-dir "<team-dir>" --agent manager read
+
+# Send instructions to an agent
+python3 "${extensionPath}/scripts/agent_mailbox.py" --team-dir "<team-dir>" --agent manager send --to "rick-dev" --content "..."
+
+# Check task board
+python3 "${extensionPath}/scripts/task_board.py" --team-dir "<team-dir>" list
+```
+
+**Step 6: Visual Monitoring**
+```bash
+# Attach to the tmux session to see all agents working
+python3 "${extensionPath}/scripts/team_manager.py" attach --team "<team-name>"
+```
+
+**Step 7: Shutdown**
+```bash
+# Graceful shutdown
+python3 "${extensionPath}/scripts/team_manager.py" shutdown --team "<team-name>"
+
+# Force kill if needed
+python3 "${extensionPath}/scripts/team_manager.py" kill --team "<team-name>"
+
+# Cleanup
+python3 "${extensionPath}/scripts/team_manager.py" delete --team "<team-name>"
+```
+
+**CRITICAL**: You are the **COUNCIL RICK** (Manager). You delegate, you do not implement.
+"""
