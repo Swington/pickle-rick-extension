@@ -129,6 +129,20 @@ class TeamManager:
         current_session = detect_current_tmux_session()
         tmux_session = current_session or f"pickle-team-{self.team_name}"
 
+        # Record the manager's pane so agent panes split from it, not
+        # whatever window the user happens to be looking at.
+        manager_pane = None
+        if current_session:
+            try:
+                r = subprocess.run(
+                    ["tmux", "display-message", "-p", "#{pane_id}"],
+                    capture_output=True, text=True,
+                )
+                if r.returncode == 0 and r.stdout.strip():
+                    manager_pane = r.stdout.strip()
+            except (OSError, FileNotFoundError):
+                pass
+
         config = {
             "name": self.team_name,
             "description": description,
@@ -136,12 +150,13 @@ class TeamManager:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "tmux_session": tmux_session,
             "use_existing_session": current_session is not None,
+            "manager_pane": manager_pane,
             "members": [
                 {
                     "name": "manager",
                     "type": "manager",
                     "status": "active",
-                    "pane_id": None,
+                    "pane_id": manager_pane,
                     "pid": os.getpid(),
                 }
             ],
@@ -268,9 +283,13 @@ class TeamManager:
             ),
         ]
 
+        # Split from the manager's pane so agents always appear next to the
+        # gemini instance that spawned them, not in the user's active window.
+        split_target = config.get("manager_pane") or self.tmux_session
+
         # Create new tmux pane by splitting
         result = subprocess.run(
-            ["tmux", "split-window", "-t", self.tmux_session, "-h",
+            ["tmux", "split-window", "-t", split_target, "-h",
              "-P", "-F", "#{pane_id}"] + cmd_parts,
             capture_output=True, text=True,
         )
@@ -278,16 +297,16 @@ class TeamManager:
         if result.returncode != 0:
             # Try vertical split if horizontal fails
             result = subprocess.run(
-                ["tmux", "split-window", "-t", self.tmux_session, "-v",
+                ["tmux", "split-window", "-t", split_target, "-v",
                  "-P", "-F", "#{pane_id}"] + cmd_parts,
                 capture_output=True, text=True,
             )
 
         pane_id = result.stdout.strip() if result.returncode == 0 else None
 
-        # Rebalance panes
+        # Rebalance panes in the manager's window
         subprocess.run(
-            ["tmux", "select-layout", "-t", self.tmux_session, "tiled"],
+            ["tmux", "select-layout", "-t", split_target, "tiled"],
             capture_output=True,
         )
 
@@ -416,7 +435,7 @@ python3 {scripts_dir}/task_board.py --team-dir "{team_dir}" create --subject "<t
         includes = [extension_root, os.path.join(extension_root, "skills")]
 
         cmd = f'echo "=== Agent {agent_name} starting ===" && '
-        cmd += "gemini -s"
+        cmd += "gemini"
         if yolo:
             cmd += " -y"
 

@@ -235,8 +235,8 @@ class TestYoloPropagation(unittest.TestCase):
         mgr.create_team("Test", yolo=True)
 
         cmd = mgr._build_agent_command("rick-dev", "prompt", "/ext", "/log", None)
-        # Should contain "gemini -s -y"
-        self.assertIn("gemini -s -y", cmd)
+        # Should contain "gemini -y"
+        self.assertIn("gemini -y", cmd)
 
     def test_agent_command_excludes_y_when_yolo_false(self):
         team_dir = os.path.join(self.test_dir, "no-yolo-team")
@@ -244,9 +244,9 @@ class TestYoloPropagation(unittest.TestCase):
         mgr.create_team("Test", yolo=False)
 
         cmd = mgr._build_agent_command("rick-dev", "prompt", "/ext", "/log", None)
-        # Should contain "gemini -s" but NOT "gemini -s -y"
-        self.assertIn("gemini -s", cmd)
-        self.assertNotIn("gemini -s -y", cmd)
+        # Should contain "gemini" but NOT "gemini -y"
+        self.assertIn("gemini", cmd)
+        self.assertNotIn("gemini -y", cmd)
 
     @patch("subprocess.run")
     def test_full_spawn_propagates_yolo(self, mock_run):
@@ -280,12 +280,12 @@ class TestYoloPropagation(unittest.TestCase):
         tmux_calls = [c for c in mock_run.call_args_list
                       if "split-window" in str(c)]
         self.assertTrue(len(tmux_calls) > 0)
-        # The command string should have "gemini -s " but not "gemini -s -y"
+        # The command string should have "gemini " but not "gemini -y"
         cmd_str = str(tmux_calls[0])
-        self.assertIn("gemini -s", cmd_str)
+        self.assertIn("gemini", cmd_str)
         # Check that -y does not appear as a standalone gemini flag
         # (it might appear in other contexts like file paths)
-        self.assertIn("gemini -s ", cmd_str)  # ends with space, not -y
+        self.assertIn("gemini ", cmd_str)  # ends with space, not -y
 
 
 class TestModelResolution(unittest.TestCase):
